@@ -40,6 +40,10 @@ MIC_ENV_ATTACK    = 0.20   # ataque de envolvente (subidas)
 MIC_ENV_DECAY     = 0.05   # decaimiento de envolvente (bajadas)
 MIC_NOISE_ALPHA   = 0.02   # promedio exponencial durante calibración
 
+# Logs (frecuencia)
+WAIT_LOG_MS       = 500    # cada cuánto loguear "esperando confirmación"
+MIC_LOG_MS        = 100    # cada cuánto loguear lectura de mic mientras no supera umbral
+
 # -------------------- Display 7 segmentos --------------------
 display_pins = [board.GP4, board.GP5, board.GP8, board.GP6, board.GP7, board.GP3, board.GP2]
 segments = [digitalio.DigitalInOut(p) for p in display_pins]
@@ -130,6 +134,10 @@ mic_thresh = None                 # umbral dinámico
 mic_over_prev = False             # estado anterior (para flanco)
 mic_cal_end_t = 0.0               # fin de calibración (cuando sys_state->ARMED)
 
+# Logs temporizados
+wait_log_next_ms = blink_change_ms
+mic_log_next_ms = blink_change_ms
+
 print("t0: desarmada (0)")
 
 while True:
@@ -167,6 +175,9 @@ while True:
                     mic_thresh = None
                     mic_over_prev = False
                     mic_cal_end_t = t + MIC_CALIBRATE_S
+                    # reset logs
+                    wait_log_next_ms = ms
+                    mic_log_next_ms = ms
                     print("[ARMADA] display=1 (monitorizando) + calib mic {:.1f}s".format(MIC_CALIBRATE_S))
                 else:
                     sys_state = DISARMED
@@ -201,6 +212,9 @@ while True:
                     mic_thresh = None
                     mic_over_prev = False
                     mic_cal_end_t = t + MIC_CALIBRATE_S
+                    # reset logs
+                    wait_log_next_ms = ms
+                    mic_log_next_ms = ms
                     print("[RESET] alarma -> display=1 (sigue armada) + recalib mic")
 
     # --------------- MIC ANALÓGICO: ENVOLVENTE + UMBRAL ---------------
@@ -237,6 +251,16 @@ while True:
     mic_rising = (mic_over and not mic_over_prev)
     mic_over_prev = mic_over
 
+    # Log del mic mientras está armado y aún no superó umbral (limitar frecuencia)
+    if sys_state == ARMED and ms >= mic_log_next_ms and not sensors_locked:
+        if mic_thresh is None:
+            print("[MIC] calib env={:.0f}".format(mic_env))
+        else:
+            if not mic_over:
+                ratio = (mic_env / mic_thresh) if mic_thresh > 0 else 0.0
+                print("[MIC] env={:.0f} / thresh={:.0f} (ratio={:.2f})".format(mic_env, mic_thresh, ratio))
+        mic_log_next_ms = ms + MIC_LOG_MS
+
     # --------------- LECTURA TRACKER + GENERACIÓN DE EVENTOS ---------------
     cur_trk = trk.value
     if cur_trk != trk_last:
@@ -257,6 +281,10 @@ while True:
                 pending_type = 'trk'
                 pending_deadline_t = t + CO_WINDOW_S
                 alarm_code = 2
+                # log inmediato de espera
+                remaining = max(0.0, pending_deadline_t - t)
+                print("[PENDIENTE] Esperando segunda confirmación (restan {:.1f}s)".format(remaining))
+                wait_log_next_ms = ms + WAIT_LOG_MS
 
     # Mic evento (flanco) si no está bloqueado
     if mic_rising and sys_state == ARMED and not sensors_locked:
@@ -273,11 +301,22 @@ while True:
             pending_type = 'mic'
             pending_deadline_t = t + CO_WINDOW_S
             alarm_code = 3
+            # log inmediato de espera
+            remaining = max(0.0, pending_deadline_t - t)
+            print("[PENDIENTE] Esperando segunda confirmación (restan {:.1f}s)".format(remaining))
+            wait_log_next_ms = ms + WAIT_LOG_MS
 
     # --------------- LÓGICA DE TIMEOUT (2/3) ---------------
     if sys_state == ARMED and not sensors_locked:
+        # logs periódicos de espera mientras no vence la ventana
+        if pending_type is not None and pending_deadline_t is not None and t < pending_deadline_t:
+            if ms >= wait_log_next_ms:
+                remaining = max(0.0, pending_deadline_t - t)
+                src = "mic" if alarm_code == 3 else "trk"
+                print("[PENDIENTE] {} -> esperando segunda confirmación (restan {:.1f}s)".format(src, remaining))
+                wait_log_next_ms = ms + WAIT_LOG_MS
+        # vencimiento de la ventana => accionar por 2/3
         if pending_type is not None and pending_deadline_t is not None and t >= pending_deadline_t:
-            # venció ventana sin segunda confirmación -> accionar servo con el código actual (2 o 3)
             servo_close_gate(); servo_until = t + SERVO_ON_S
             sensors_locked = True
             print(f"[ALARMA] code={alarm_code} -> Servo ON (timeout ventana)")
