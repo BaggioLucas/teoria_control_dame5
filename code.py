@@ -1,4 +1,4 @@
-# ===== Alarma 1 puerta – Pico 2W + KY-033 + KY-038(D0) + 7seg(1 díg) + Servo =====
+# ===== Alarma 1 puerta – Pico 2W + KY-033 + KY-038(AO) + 7seg(1 díg) + Servo =====
 # Estados de display:
 #   0 -> desarmada (t0)
 #   1 -> armada (monitorizando)
@@ -10,7 +10,7 @@
 #   - Pulsación LARGA -> togglear ARMAR/DESARMAR
 #   - Pulsación CORTA (si hay intrusión) -> reset intrusión (mantiene armado)
 #
-# Sensor mic KY-038 D0 -> GP22 (activo cuando supera umbral del potenciómetro)
+# Sensor mic KY-038 AO -> GP26/ADC0 (umbral por software con auto-calibración)
 # Sensor tracker KY-033 -> GP14 (tu mapeo: 0 = disparo / "line present")
 # Servo continuo -> GP18
 # Display 7 seg (cátodo común) -> GP4,5,8,6,7,3,2
@@ -20,6 +20,7 @@ import board
 import digitalio
 import pwmio
 from adafruit_motor import servo
+from analogio import AnalogIn
 
 # -------------------- Configuración --------------------
 CO_WINDOW_S      = 5.0    # ventana para considerar "ambos sensores"
@@ -28,7 +29,16 @@ BTN_LONGPRESS_S  = 1.2
 BLINK_MS         = 500    # parpadeo para 2/3
 SERVO_ON_S       = 2.0    # tiempo de giro para bajar reja
 RUN_SPEED        = 1.0    # 0..1 para servo continuo
-SAMPLE_DELAY     = 0.01
+SAMPLE_DELAY     = 0.002  # más rápido para seguir envolvente de audio
+
+# Mic analógico (parámetros de detección)
+MIC_CALIBRATE_S   = 3.0    # duración de auto-calibración al armar
+MIC_FACTOR        = 2.5    # umbral = piso_de_ruido * factor
+MIC_ABS_MIN       = 800.0  # umbral mínimo absoluto (unidades ADC de 16 bits)
+MIC_DC_ALPHA      = 0.002  # filtro muy lento para DC (seguimiento del offset)
+MIC_ENV_ATTACK    = 0.20   # ataque de envolvente (subidas)
+MIC_ENV_DECAY     = 0.05   # decaimiento de envolvente (bajadas)
+MIC_NOISE_ALPHA   = 0.02   # promedio exponencial durante calibración
 
 # -------------------- Display 7 segmentos --------------------
 display_pins = [board.GP4, board.GP5, board.GP8, board.GP6, board.GP7, board.GP3, board.GP2]
@@ -63,10 +73,8 @@ button = digitalio.DigitalInOut(board.GP17)
 button.direction = digitalio.Direction.INPUT
 button.pull = digitalio.Pull.UP
 
-# Mic digital D0
-mic = digitalio.DigitalInOut(board.GP22)
-mic.direction = digitalio.Direction.INPUT
-MIC_ACTIVE = 0      # la mayoría de módulos tiran LOW cuando superan umbral (ajustá si es 1)
+# Mic analógico AO -> ADC0
+mic_adc = AnalogIn(board.GP26)
 
 # Tracker (KY-033)
 trk = digitalio.DigitalInOut(board.GP14)
@@ -96,9 +104,8 @@ btn_handled = False
 
 trk_last = trk.value
 trk_change_t = now()
-mic_last = mic.value
-mic_change_t = now()
 
+# Eventos y ventana
 last_trk_event_t = None
 last_mic_event_t = None
 
@@ -109,6 +116,19 @@ blink_change_ms = time.monotonic() * 1000
 
 # Servo control
 servo_until = 0.0
+
+# Nuevo: estados de pendiente y bloqueo de sensores
+pending_type = None           # None | 'trk' | 'mic'
+pending_deadline_t = None     # timestamp límite para doble confirmación
+sensors_locked = False        # True tras accionar servo (2/3 por timeout o 4 confirmada)
+
+# Nuevo: estado de mic analógico (envolvente / umbral)
+mic_dc = float(mic_adc.value)     # componente lenta (offset)
+mic_env = 0.0                     # envolvente de amplitud
+mic_noise_est = 0.0               # estimador de piso de ruido (sobre env)
+mic_thresh = None                 # umbral dinámico
+mic_over_prev = False             # estado anterior (para flanco)
+mic_cal_end_t = 0.0               # fin de calibración (cuando sys_state->ARMED)
 
 print("t0: desarmada (0)")
 
@@ -135,14 +155,27 @@ while True:
                     alarm_code = 0
                     last_trk_event_t = None
                     last_mic_event_t = None
+                    pending_type = None
+                    pending_deadline_t = None
+                    sensors_locked = False
                     servo_stop()
                     display_digit(1)
-                    print("[ARMADA] display=1 (monitorizando)")
+                    # iniciar calibración de mic
+                    mic_dc = float(mic_adc.value)
+                    mic_env = 0.0
+                    mic_noise_est = 0.0
+                    mic_thresh = None
+                    mic_over_prev = False
+                    mic_cal_end_t = t + MIC_CALIBRATE_S
+                    print("[ARMADA] display=1 (monitorizando) + calib mic {:.1f}s".format(MIC_CALIBRATE_S))
                 else:
                     sys_state = DISARMED
                     alarm_code = 0
                     last_trk_event_t = None
                     last_mic_event_t = None
+                    pending_type = None
+                    pending_deadline_t = None
+                    sensors_locked = False
                     servo_stop()
                     display_digit(0)
                     print("[DESARMADA] display=0")
@@ -154,55 +187,100 @@ while True:
                 # Reset sólo si hay alarma y estamos armados
                 if sys_state == ARMED and alarm_code in (2,3,4):
                     alarm_code = 0
+                    pending_type = None
+                    pending_deadline_t = None
+                    sensors_locked = False
+                    last_trk_event_t = None
+                    last_mic_event_t = None
                     servo_stop()
                     display_digit(1)
-                    print("[RESET] alarma -> display=1 (sigue armada)")
+                    # rearmar calibración rápida del mic (opcional)
+                    mic_dc = float(mic_adc.value)
+                    mic_env = 0.0
+                    mic_noise_est = 0.0
+                    mic_thresh = None
+                    mic_over_prev = False
+                    mic_cal_end_t = t + MIC_CALIBRATE_S
+                    print("[RESET] alarma -> display=1 (sigue armada) + recalib mic")
 
-    # --------------- LECTURA SENSORES ---------------
+    # --------------- MIC ANALÓGICO: ENVOLVENTE + UMBRAL ---------------
+    # Leer ADC (0..65535), separar DC lento y amplitud, y construir envolvente
+    sample = float(mic_adc.value)
+    mic_dc += (sample - mic_dc) * MIC_DC_ALPHA
+    amp = abs(sample - mic_dc)
+    if amp > mic_env:
+        mic_env += (amp - mic_env) * MIC_ENV_ATTACK
+    else:
+        mic_env += (amp - mic_env) * MIC_ENV_DECAY
+
+    # Calibración del piso de ruido al estar armada
+    if sys_state == ARMED:
+        if t <= mic_cal_end_t:
+            # estimar piso de ruido sobre la envolvente
+            if mic_noise_est == 0.0:
+                mic_noise_est = mic_env
+            else:
+                mic_noise_est += (mic_env - mic_noise_est) * MIC_NOISE_ALPHA
+            # aún sin umbral definitivo
+            mic_thresh = None
+        elif mic_thresh is None:
+            # fijar umbral dinámico una vez termina la calibración
+            mic_thresh = max(mic_noise_est * MIC_FACTOR, MIC_ABS_MIN)
+            print("[MIC] calibrado: noise_est={:.0f}, thresh={:.0f}".format(mic_noise_est, mic_thresh))
+    else:
+        mic_thresh = None  # sin armar, no evaluamos
+
+    # Detección por mic: flanco de cruce de umbral (solo si armada y no bloqueado)
+    mic_over = False
+    if sys_state == ARMED and (mic_thresh is not None):
+        mic_over = mic_env >= mic_thresh
+    mic_rising = (mic_over and not mic_over_prev)
+    mic_over_prev = mic_over
+
+    # --------------- LECTURA TRACKER + GENERACIÓN DE EVENTOS ---------------
     cur_trk = trk.value
     if cur_trk != trk_last:
         trk_change_t = t
         trk_last = cur_trk
         # flanco activo
-        if cur_trk == TRK_ACTIVE and sys_state == ARMED:
+        if cur_trk == TRK_ACTIVE and sys_state == ARMED and not sensors_locked:
             last_trk_event_t = t
             print("[EVENTO] Tracker")
+            if pending_type == 'mic' and (t - last_mic_event_t) <= CO_WINDOW_S:
+                # doble confirmación -> 4 (fijo) y accionar servo
+                alarm_code = 4
+                servo_close_gate(); servo_until = t + SERVO_ON_S
+                sensors_locked = True
+                print("[ALARMA] code=4 -> Servo ON (confirmada)")
+            elif pending_type is None:
+                # primer evento (solo tracker): pendiente 2 (parpadeo), sin servo
+                pending_type = 'trk'
+                pending_deadline_t = t + CO_WINDOW_S
+                alarm_code = 2
 
-    cur_mic = mic.value
-    if cur_mic != mic_last:
-        mic_change_t = t
-        mic_last = cur_mic
-        if cur_mic == MIC_ACTIVE and sys_state == ARMED:
-            last_mic_event_t = t
-            print("[EVENTO] Mic")
+    # Mic evento (flanco) si no está bloqueado
+    if mic_rising and sys_state == ARMED and not sensors_locked:
+        last_mic_event_t = t
+        print("[EVENTO] Mic (analog > thresh)")
+        if pending_type == 'trk' and (t - last_trk_event_t) <= CO_WINDOW_S:
+            # doble confirmación -> 4 (fijo) y accionar servo
+            alarm_code = 4
+            servo_close_gate(); servo_until = t + SERVO_ON_S
+            sensors_locked = True
+            print("[ALARMA] code=4 -> Servo ON (confirmada)")
+        elif pending_type is None:
+            # primer evento (solo mic): pendiente 3 (parpadeo), sin servo
+            pending_type = 'mic'
+            pending_deadline_t = t + CO_WINDOW_S
+            alarm_code = 3
 
-    # --------------- LÓGICA DE ALARMA ---------------
-    if sys_state == ARMED:
-        new_code = alarm_code
-
-        # ¿coinciden ambos dentro de la ventana?
-        if last_trk_event_t and last_mic_event_t:
-            if abs(last_trk_event_t - last_mic_event_t) <= CO_WINDOW_S:
-                new_code = 4  # confirmada por ambos
-
-        # Si aún no es 4, ver sólo uno
-        if new_code != 4:
-            # sólo tracker dentro de ventana sin mic
-            if last_trk_event_t and (not last_mic_event_t or (t - last_mic_event_t) > CO_WINDOW_S):
-                # pero solo si el evento de tracker es reciente
-                if (t - last_trk_event_t) <= CO_WINDOW_S:
-                    new_code = 2
-            # sólo mic dentro de ventana sin tracker
-            if last_mic_event_t and (not last_trk_event_t or (t - last_trk_event_t) > CO_WINDOW_S):
-                if (t - last_mic_event_t) <= CO_WINDOW_S:
-                    new_code = 3
-
-        # Si cambió el código de alarma, actualizo y muevo servo
-        if new_code in (2,3,4) and new_code != alarm_code:
-            alarm_code = new_code
-            servo_close_gate()
-            servo_until = t + SERVO_ON_S
-            print(f"[ALARMA] code={alarm_code}  -> Servo ON")
+    # --------------- LÓGICA DE TIMEOUT (2/3) ---------------
+    if sys_state == ARMED and not sensors_locked:
+        if pending_type is not None and pending_deadline_t is not None and t >= pending_deadline_t:
+            # venció ventana sin segunda confirmación -> accionar servo con el código actual (2 o 3)
+            servo_close_gate(); servo_until = t + SERVO_ON_S
+            sensors_locked = True
+            print(f"[ALARMA] code={alarm_code} -> Servo ON (timeout ventana)")
 
     # --------------- SERVO HOLD ---------------
     if servo_until > 0.0 and t >= servo_until:
