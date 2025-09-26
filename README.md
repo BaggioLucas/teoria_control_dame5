@@ -39,7 +39,7 @@ Sistema de asistencia al sereno para turno nocturno. Opera por defecto en modo a
 - Cables, protoboard y fuente 5V/3.3V según servo (masa común con la Pico)
 
 ---
-
+<img width="933" height="621" alt="Schematic_New-Project_2025-09-25 (1)" src="https://github.com/user-attachments/assets/7f302132-1c08-4378-936e-55cb675c635f" />
 ---
 
 ## Software
