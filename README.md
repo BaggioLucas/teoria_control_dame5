@@ -28,6 +28,8 @@ Sistema de asistencia al sereno para turno nocturno. Opera por defecto en modo a
 - **4**: intrusión confirmada por tracker + mic (fijo).
 
 ---
+<img width="891" height="594" alt="Schematic_New-Project_2025-09-25 (2)" src="https://github.com/user-attachments/assets/cbe6b8e5-69b0-449a-a740-87a5d76e7221" />
+
 
 ## Hardware requerido
 - **Raspberry Pi Pico 2W** (CircuitPython)
@@ -39,8 +41,8 @@ Sistema de asistencia al sereno para turno nocturno. Opera por defecto en modo a
 - Cables, protoboard y fuente 5V/3.3V según servo (masa común con la Pico)
 
 ---
-<img width="933" height="621" alt="Schematic_New-Project_2025-09-25 (1)" src="https://github.com/user-attachments/assets/7f302132-1c08-4378-936e-55cb675c635f" />
----
+
+
 
 ## Software
 - Plataforma: **CircuitPython** en la Pico 2W.
