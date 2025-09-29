@@ -87,7 +87,7 @@ pwm = pwmio.PWMOut(board.GP18, frequency=50)
 gate = servo.ContinuousServo(pwm, min_pulse=1000, max_pulse=2000)
 def servo_stop():       gate.throttle = 0.0
 def servo_close_gate(): gate.throttle = RUN_SPEED
-def servo_open_gate():  gate.throttle = -RUN_SPEED
+def servo_open_gate(): gate.throttle = -RUN_SPEED
 
 # -------------------- Estados lógicos --------------------
 DISARMED = 0
@@ -145,7 +145,6 @@ while True:
         if cur_btn is False:         # se presionó
             btn_down_t = t
             btn_handled = False
-    
     # estable tras debounce
     if (t - btn_change_t) >= BTN_DEBOUNCE_S:
         # LONG PRESS -> toggle armado/desarmado
@@ -179,34 +178,33 @@ while True:
                     pending_deadline_t = None
                     sensors_locked = False
                     servo_open_gate()
-                    servo_until = t + SERVO_ON_S
+                    servo_stop()
                     display_digit(0)
-                    print("[DESARMADA] display=0 -> Servo OPEN")
-    
-    # SHORT PRESS -> reset alarma si existe (MOVIDO FUERA DEL BLOQUE DEBOUNCE)
-    if (btn_down_t is not None) and (cur_btn is True) and (not btn_handled):
-        press_dt = t - btn_down_t
-        btn_down_t = None
-        if press_dt >= BTN_DEBOUNCE_S and press_dt < BTN_LONGPRESS_S:
-            # Reset sólo si hay alarma y estamos armados
-            if sys_state == ARMED and alarm_code in (2,3,4):
-                alarm_code = 0
-                pending_type = None
-                pending_deadline_t = None
-                sensors_locked = False
-                last_trk_event_t = None
-                last_mic_event_t = None
-                servo_open_gate()
-                servo_until = t + SERVO_ON_S
-                display_digit(1)
-                # rearmar calibración rápida del mic (opcional)
-                mic_dc = float(mic_adc.value)
-                mic_env = 0.0
-                mic_noise_est = 0.0
-                mic_thresh = None
-                mic_over_prev = False
-                mic_cal_end_t = t + MIC_CALIBRATE_S
-                print("[RESET] alarma -> display=1 (sigue armada) + recalib mic + Servo OPEN")
+                    print("[DESARMADA] display=0")
+        # SHORT PRESS -> reset alarma si existe
+        if (btn_down_t is not None) and (cur_btn is True) and (not btn_handled):
+            press_dt = t - btn_down_t
+            btn_down_t = None
+            if press_dt >= BTN_DEBOUNCE_S and press_dt < BTN_LONGPRESS_S:
+                # Reset sólo si hay alarma y estamos armados
+                if sys_state == ARMED and alarm_code in (2,3,4):
+                    alarm_code = 0
+                    pending_type = None
+                    pending_deadline_t = None
+                    sensors_locked = False
+                    last_trk_event_t = None
+                    last_mic_event_t = None
+                    servo_open_gate()
+                    servo_stop()
+                    display_digit(1)
+                    # rearmar calibración rápida del mic (opcional)
+                    mic_dc = float(mic_adc.value)
+                    mic_env = 0.0
+                    mic_noise_est = 0.0
+                    mic_thresh = None
+                    mic_over_prev = False
+                    mic_cal_end_t = t + MIC_CALIBRATE_S
+                    print("[RESET] alarma -> display=1 (sigue armada) + recalib mic")
 
     # --------------- MIC ANALÓGICO: ENVOLVENTE + UMBRAL ---------------
     # Leer ADC (0..65535), separar DC lento y amplitud, y construir envolvente
