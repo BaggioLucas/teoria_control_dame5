@@ -52,12 +52,17 @@ Sistema de asistencia al sereno para turno nocturno. Opera por defecto en modo a
   - `analogio`
   - `digitalio`
   - `pwmio`
+  - `adafruit_minimqtt/` (carpeta completa)
+  - `adafruit_ticks.mpy`
+  - `adafruit_connection_manager.mpy`
+  - `adafruit_esp32spi_socketpool.mpy` (solo necesario si usas ESP32 SPI; para Pico 2W con WiFi nativo basta `socketpool` estándar)
 
 Pasos rápidos:
 1) Instalar CircuitPython en la Pico 2W.
 2) Crear carpeta `lib` en `CIRCUITPY` si no existe.
-3) Copiar las librerías requeridas dentro de `CIRCUITPY/lib/`.
+3) Copiar las librerías requeridas dentro de `CIRCUITPY/lib/` (puedes descargar el bundle desde `https://circuitpython.org/libraries`).
 4) Copiar `code.py` a la raíz de `CIRCUITPY`.
+5) Editar en `code.py` las constantes `WIFI_SSID`, `WIFI_PASSWORD`, `MQTT_BROKER`, `MQTT_PORT` y opcionalmente `NOMBRE_EQUIPO`.
 
 ---
 
@@ -89,6 +94,21 @@ Pasos rápidos:
    - `MIC_ABS_MIN` garantiza un piso si el ambiente es muy silencioso.
 
 ---
+
+## Publicación de datos puros por MQTT
+
+El sistema publica periódicamente los valores en bruto de los sensores, independientemente del estado de la alarma:
+
+- `sensores/<NOMBRE_EQUIPO>/mic_adc` → valor ADC de 16 bits del KY-038 (0..65535)
+- `sensores/<NOMBRE_EQUIPO>/tracker` → estado digital del KY-033 (0/1)
+
+Parámetros relevantes en `code.py`:
+
+- `PUBLISH_INTERVAL_S` intervalo de publicación.
+- `MQTT_BROKER` IP del broker (por ejemplo, Mosquitto en tu PC).
+- `MQTT_PORT` normalmente 1883.
+
+Para un ejemplo de arquitectura con maestro y dashboard Node-RED, ver la referencia del repositorio `Control-De-Temp` [`https://github.com/StegmayerTobias/Control-De-Temp/tree/main`].
 
 ## Flujo de uso
 1) Encender la Pico con `code.py` en `CIRCUITPY` → display en 0.

@@ -21,6 +21,9 @@ import digitalio
 import pwmio
 from adafruit_motor import servo
 from analogio import AnalogIn
+import wifi
+import socketpool
+import adafruit_minimqtt.adafruit_minimqtt as MQTT
 
 # -------------------- Configuración --------------------
 CO_WINDOW_S      = 5.0    # ventana para considerar "ambos sensores"
@@ -30,6 +33,16 @@ BLINK_MS         = 500    # parpadeo para 2/3
 SERVO_ON_S       = 2.0    # tiempo de giro para bajar reja
 RUN_SPEED        = 1.0    # 0..1 para servo continuo
 SAMPLE_DELAY     = 0.002  # más rápido para seguir envolvente de audio
+
+# MQTT / WiFi
+WIFI_SSID = "TU_SSID"          # <- completar
+WIFI_PASSWORD = "TU_PASSWORD"  # <- completar
+MQTT_BROKER = "192.168.1.100"  # <- completar con la IPv4 del broker
+MQTT_PORT = 1883
+NOMBRE_EQUIPO = "pico2w-alarma"
+MQTT_BASE_TOPIC = f"sensores/{NOMBRE_EQUIPO}"
+PUBLISH_INTERVAL_S = 2.0
+PUB_INTERVAL = PUBLISH_INTERVAL_S  # alias para función publish()
 
 # Mic analógico (parámetros de detección)
 MIC_CALIBRATE_S   = 3.0    # duración de auto-calibración al armar
@@ -132,9 +145,69 @@ mic_cal_end_t = 0.0               # fin de calibración (cuando sys_state->ARMED
 
 print("t0: desarmada (0)")
 
+# -------------------- Conexión WiFi + MQTT --------------------
+def _wifi_connect():
+    try:
+        print(f"Conectando a WiFi '{WIFI_SSID}' ...")
+        wifi.radio.connect(WIFI_SSID, WIFI_PASSWORD)
+        print(f"WiFi OK | IP: {wifi.radio.ipv4_address}")
+        return True
+    except Exception as e:
+        print(f"[WiFi] error: {e}")
+        return False
+
+_wifi_ok = _wifi_connect()
+_socket_pool = socketpool.SocketPool(wifi.radio) if _wifi_ok else None
+
+def _on_mqtt_connect(client, userdata, flags, rc):
+    print("[MQTT] Conectado al broker")
+
+def _mqtt_make_client():
+    try:
+        client = MQTT.MQTT(
+            broker=MQTT_BROKER,
+            port=MQTT_PORT,
+            socket_pool=_socket_pool,
+            is_ssl=False,
+        )
+        client.on_connect = _on_mqtt_connect
+        client.connect()
+        return client
+    except Exception as e:
+        print(f"[MQTT] error de conexión: {e}")
+        return None
+
+mqtt_client = _mqtt_make_client() if _wifi_ok else None
+last_pub = 0.0
+
+# Publicación periódica (para no sobrecargar el broker)
+def publish():
+    global last_pub
+    if mqtt_client is None:
+        return
+    now_ts = time.monotonic()
+    if (now_ts - last_pub) >= PUB_INTERVAL:
+        try:
+            mic_raw = int(mic_adc.value)
+            trk_raw = 1 if trk.value else 0
+            mqtt_client.publish(f"{MQTT_BASE_TOPIC}/mic_adc", str(mic_raw))
+            mqtt_client.publish(f"{MQTT_BASE_TOPIC}/tracker", str(trk_raw))
+            print(f"[MQTT] pub mic_adc={mic_raw} tracker={trk_raw}")
+            last_pub = now_ts
+        except Exception as e:
+            print(f"[MQTT] publish error: {e}")
+
 while True:
     t = now()
     ms = t * 1000.0
+
+    # --------------- MQTT loop + publicación periódica de datos puros ---------------
+    if mqtt_client is not None:
+        try:
+            mqtt_client.loop()
+        except Exception as e:
+            print(f"[MQTT] loop error: {e}")
+        publish()
 
     # --------------- LECTURA BOTÓN (short / long) ---------------
     cur_btn = button.value
