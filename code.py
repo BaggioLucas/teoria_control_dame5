@@ -91,6 +91,7 @@ pwm = pwmio.PWMOut(board.GP18, frequency=50)
 gate = servo.ContinuousServo(pwm, min_pulse=1000, max_pulse=2000)
 def servo_stop():       gate.throttle = 0.0
 def servo_close_gate(): gate.throttle = RUN_SPEED
+def servo_open_gate():  gate.throttle = -RUN_SPEED
 
 # -------------------- Estados lógicos --------------------
 DISARMED = 0
@@ -134,6 +135,9 @@ mic_thresh = None                 # umbral dinámico
 mic_over_prev = False             # estado anterior (para flanco)
 mic_cal_end_t = 0.0               # fin de calibración (cuando sys_state->ARMED)
 
+# Control de estado de la puerta
+gate_was_activated = False        # True si la puerta se cerró por una alarma
+
 # Logs temporizados
 wait_log_next_ms = blink_change_ms
 mic_log_next_ms = blink_change_ms
@@ -166,6 +170,7 @@ while True:
                     pending_type = None
                     pending_deadline_t = None
                     sensors_locked = False
+                    gate_was_activated = False  # Reset del estado de la puerta
                     servo_stop()
                     display_digit(1)
                     # iniciar calibración de mic
@@ -187,9 +192,16 @@ while True:
                     pending_type = None
                     pending_deadline_t = None
                     sensors_locked = False
-                    servo_stop()
+                    # Solo abrir si la puerta se había cerrado por una alarma
+                    if gate_was_activated:
+                        servo_open_gate()
+                        servo_until = t + SERVO_ON_S
+                        gate_was_activated = False  # Reset después de abrir
+                        print("[DESARMADA] display=0 -> Servo OPEN (puerta se había cerrado)")
+                    else:
+                        servo_stop()
+                        print("[DESARMADA] display=0 -> Sin activación previa, no abre servo")
                     display_digit(0)
-                    print("[DESARMADA] display=0")
         # SHORT PRESS -> reset alarma si existe
         if (btn_down_t is not None) and (cur_btn is True) and (not btn_handled):
             press_dt = t - btn_down_t
@@ -203,7 +215,15 @@ while True:
                     sensors_locked = False
                     last_trk_event_t = None
                     last_mic_event_t = None
-                    servo_stop()
+                    # Solo abrir si la puerta se había cerrado por una alarma
+                    if gate_was_activated:
+                        servo_open_gate()
+                        servo_until = t + SERVO_ON_S
+                        gate_was_activated = False  # Reset después de abrir
+                        print("[RESET] alarma -> Servo OPEN (puerta se había cerrado)")
+                    else:
+                        servo_stop()
+                        print("[RESET] alarma -> Sin activación previa, no abre servo")
                     display_digit(1)
                     # rearmar calibración rápida del mic (opcional)
                     mic_dc = float(mic_adc.value)
@@ -274,6 +294,7 @@ while True:
                 # doble confirmación -> 4 (fijo) y accionar servo
                 alarm_code = 4
                 servo_close_gate(); servo_until = t + SERVO_ON_S
+                gate_was_activated = True  # Marcar que la puerta se cerró
                 sensors_locked = True
                 print("[ALARMA] code=4 -> Servo ON (confirmada)")
             elif pending_type is None:
@@ -294,6 +315,7 @@ while True:
             # doble confirmación -> 4 (fijo) y accionar servo
             alarm_code = 4
             servo_close_gate(); servo_until = t + SERVO_ON_S
+            gate_was_activated = True  # Marcar que la puerta se cerró
             sensors_locked = True
             print("[ALARMA] code=4 -> Servo ON (confirmada)")
         elif pending_type is None:
@@ -318,6 +340,7 @@ while True:
         # vencimiento de la ventana => accionar por 2/3
         if pending_type is not None and pending_deadline_t is not None and t >= pending_deadline_t:
             servo_close_gate(); servo_until = t + SERVO_ON_S
+            gate_was_activated = True  # Marcar que la puerta se cerró
             sensors_locked = True
             print(f"[ALARMA] code={alarm_code} -> Servo ON (timeout ventana)")
 
