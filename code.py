@@ -87,6 +87,7 @@ pwm = pwmio.PWMOut(board.GP18, frequency=50)
 gate = servo.ContinuousServo(pwm, min_pulse=1000, max_pulse=2000)
 def servo_stop():       gate.throttle = 0.0
 def servo_close_gate(): gate.throttle = RUN_SPEED
+def servo_open_gate():  gate.throttle = -RUN_SPEED
 
 # -------------------- Estados lógicos --------------------
 DISARMED = 0
@@ -176,9 +177,10 @@ while True:
                     pending_type = None
                     pending_deadline_t = None
                     sensors_locked = False
-                    servo_stop()
+                    servo_open_gate()
+                    servo_until = t + SERVO_ON_S
                     display_digit(0)
-                    print("[DESARMADA] display=0")
+                    print("[DESARMADA] display=0 -> Servo OPEN")
         # SHORT PRESS -> reset alarma si existe
         if (btn_down_t is not None) and (cur_btn is True) and (not btn_handled):
             press_dt = t - btn_down_t
@@ -192,7 +194,8 @@ while True:
                     sensors_locked = False
                     last_trk_event_t = None
                     last_mic_event_t = None
-                    servo_stop()
+                    servo_open_gate()
+                    servo_until = t + SERVO_ON_S
                     display_digit(1)
                     # rearmar calibración rápida del mic (opcional)
                     mic_dc = float(mic_adc.value)
@@ -201,7 +204,7 @@ while True:
                     mic_thresh = None
                     mic_over_prev = False
                     mic_cal_end_t = t + MIC_CALIBRATE_S
-                    print("[RESET] alarma -> display=1 (sigue armada) + recalib mic")
+                    print("[RESET] alarma -> display=1 (sigue armada) + recalib mic + Servo OPEN")
 
     # --------------- MIC ANALÓGICO: ENVOLVENTE + UMBRAL ---------------
     # Leer ADC (0..65535), separar DC lento y amplitud, y construir envolvente
