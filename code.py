@@ -35,9 +35,9 @@ RUN_SPEED        = 1.0    # 0..1 para servo continuo
 SAMPLE_DELAY     = 0.002  # más rápido para seguir envolvente de audio
 
 # MQTT / WiFi
-WIFI_SSID = "TU_SSID"          # <- completar
-WIFI_PASSWORD = "TU_PASSWORD"  # <- completar
-MQTT_BROKER = "192.168.1.100"  # <- completar con la IPv4 del broker
+WIFI_SSID = "wfrre-Docentes"          # <- completar
+WIFI_PASSWORD = "20$tscFrre.24"  # <- completar
+MQTT_BROKER = "10.13.100.154"  # <- completar con la IPv4 del broker
 MQTT_PORT = 1883
 NOMBRE_EQUIPO = "pico2w-alarma"
 MQTT_BASE_TOPIC = f"sensores/{NOMBRE_EQUIPO}"
