@@ -16,11 +16,15 @@
 # Display 7 seg (cátodo común) -> GP4,5,8,6,7,3,2
 
 import time
+import json
 import board
 import digitalio
 import pwmio
 from adafruit_motor import servo
 from analogio import AnalogIn
+import wifi
+import socketpool
+import adafruit_minimqtt.adafruit_minimqtt as MQTT
 
 # -------------------- Configuración --------------------
 CO_WINDOW_S      = 5.0    # ventana para considerar "ambos sensores"
@@ -30,6 +34,17 @@ BLINK_MS         = 500    # parpadeo para 2/3
 SERVO_ON_S       = 2.0    # tiempo de giro para bajar reja
 RUN_SPEED        = 1.0    # 0..1 para servo continuo
 SAMPLE_DELAY     = 0.002  # más rápido para seguir envolvente de audio
+
+# MQTT / WiFi
+DISCOVERY_TOPIC = "descubrir"
+WIFI_SSID = "wfrre-Docentes"          # <- completar
+WIFI_PASSWORD = "20$tscFrre.24"  # <- completar
+MQTT_BROKER = "10.13.100.154"  # <- completar con la IPv4 del broker
+MQTT_PORT = 1883
+NOMBRE_EQUIPO = "Dame5"
+MQTT_BASE_TOPIC = f"sensores/{NOMBRE_EQUIPO}"
+PUBLISH_INTERVAL_S = 10.0  # Solo para micrófono
+PUB_INTERVAL = PUBLISH_INTERVAL_S  # alias para función publish()
 
 # Mic analógico (parámetros de detección)
 MIC_CALIBRATE_S   = 3.0    # duración de auto-calibración al armar
@@ -142,11 +157,108 @@ gate_was_activated = False        # True si la puerta se cerró por una alarma
 wait_log_next_ms = blink_change_ms
 mic_log_next_ms = blink_change_ms
 
+# Cola para eventos del tracker
+tracker_event_queue = []  # Lista para almacenar eventos del tracker
+MAX_QUEUE_SIZE = 50       # Máximo de eventos en cola
+
 print("t0: desarmada (0)")
+
+# -------------------- Conexión WiFi + MQTT --------------------
+def _wifi_connect():
+    try:
+        print(f"Conectando a WiFi '{WIFI_SSID}' ...")
+        wifi.radio.connect(WIFI_SSID, WIFI_PASSWORD)
+        print(f"WiFi OK | IP: {wifi.radio.ipv4_address}")
+        return True
+    except Exception as e:
+        print(f"[WiFi] error: {e}")
+        return False
+
+_wifi_ok = _wifi_connect()
+_socket_pool = socketpool.SocketPool(wifi.radio) if _wifi_ok else None
+
+def _on_mqtt_connect(client, userdata, flags, rc):
+    client.publish(DISCOVERY_TOPIC, json.dumps({"equipo": NOMBRE_EQUIPO, "magnitudes": ["mic_adc", "tracker"]}))
+    print("[MQTT] Conectado al broker")
+
+def _mqtt_make_client():
+    try:
+        client = MQTT.MQTT(
+            broker=MQTT_BROKER,
+            port=MQTT_PORT,
+            socket_pool=_socket_pool,
+            is_ssl=False,
+        )
+        client.on_connect = _on_mqtt_connect
+        client.connect()
+        return client
+    except Exception as e:
+        print(f"[MQTT] error de conexión: {e}")
+        return None
+
+mqtt_client = _mqtt_make_client() if _wifi_ok else None
+last_pub = 0.0
+
+# Función para agregar evento del tracker a la cola
+def queue_tracker_event(event_type, timestamp):
+    global tracker_event_queue
+    event = {
+        "type": event_type,  # "activation" o "deactivation"
+        "timestamp": timestamp,
+        "value": 1 if event_type == "activation" else 0
+    }
+    
+    # Agregar a la cola
+    tracker_event_queue.append(event)
+    
+    # Limitar tamaño de cola
+    if len(tracker_event_queue) > MAX_QUEUE_SIZE:
+        tracker_event_queue.pop(0)  # Remover el evento más antiguo
+    
+    print(f"[TRACKER] Evento encolado: {event_type} en {timestamp:.2f}s")
+
+# Función para procesar la cola del tracker
+def process_tracker_queue():
+    global tracker_event_queue
+    if mqtt_client is None or not tracker_event_queue:
+        return
+    
+    try:
+        # Procesar hasta 5 eventos por ciclo para no sobrecargar
+        events_to_process = min(5, len(tracker_event_queue))
+        for i in range(events_to_process):
+            event = tracker_event_queue.pop(0)
+            mqtt_client.publish(f"{MQTT_BASE_TOPIC}/tracker", str(event["value"]))
+            print(f"[MQTT] pub tracker event: {event}")
+    except Exception as e:
+        print(f"[MQTT] tracker queue error: {e}")
+
+# Publicación periódica (solo para micrófono)
+def publish():
+    global last_pub
+    if mqtt_client is None:
+        return
+    now_ts = time.monotonic()
+    if (now_ts - last_pub) >= PUB_INTERVAL:
+        try:
+            mqtt_client.publish(f"{MQTT_BASE_TOPIC}/mic_adc", str(mic_env))
+            print(f"[MQTT] pub mic_adc={mic_env}")
+            last_pub = now_ts
+        except Exception as e:
+            print(f"[MQTT] publish error: {e}")
 
 while True:
     t = now()
     ms = t * 1000.0
+
+    # --------------- MQTT loop + publicación periódica de datos puros ---------------
+    if mqtt_client is not None:
+        try:
+            mqtt_client.loop()
+        except Exception as e:
+            print(f"[MQTT] loop error: {e}")
+        publish()  # Solo micrófono por intervalos
+        process_tracker_queue()  # Procesar cola del tracker
 
     # --------------- LECTURA BOTÓN (short / long) ---------------
     cur_btn = button.value
@@ -286,7 +398,14 @@ while True:
     if cur_trk != trk_last:
         trk_change_t = t
         trk_last = cur_trk
-        # flanco activo
+        
+        # Encolar evento del tracker inmediatamente
+        if cur_trk == TRK_ACTIVE:
+            queue_tracker_event("activation", t)
+        else:
+            queue_tracker_event("deactivation", t)
+        
+        # flanco activo para lógica de alarma
         if cur_trk == TRK_ACTIVE and sys_state == ARMED and not sensors_locked:
             last_trk_event_t = t
             print("[EVENTO] Tracker")
