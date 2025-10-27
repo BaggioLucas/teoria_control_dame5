@@ -1,0 +1,76 @@
+TYPE
+  LOGLEVEL : (CRITICAL, WARNING, INFO, DEBUG) := INFO;
+END_TYPE
+
+FUNCTION_BLOCK LOGGER
+  VAR_INPUT
+    TRIG : BOOL;
+    MSG : STRING;
+    LEVEL : LOGLEVEL := INFO;
+  END_VAR
+  VAR
+    TRIG0 : BOOL;
+  END_VAR
+
+  IF TRIG AND NOT TRIG0 THEN
+  {{
+   LogMessage(GetFbVar(LEVEL),(char*)GetFbVar(MSG, .body),GetFbVar(MSG, .len));
+  }}
+  END_IF;
+  TRIG0:=TRIG;
+END_FUNCTION_BLOCK
+
+
+PROGRAM program0
+  VAR
+    OutB AT %QX0.0 : BOOL := 0;
+    Input1 AT %IX0.0 : BOOL := 0;
+    OutA AT %QX0.1 : BOOL := 0;
+    OutF AT %QX0.2 : BOOL := 0;
+    OutG AT %QX0.3 : BOOL := 0;
+    OutC AT %QX0.4 : BOOL := 0;
+    OutD AT %QX0.5 : BOOL := 0;
+    OutE AT %QX0.6 : BOOL := 0;
+  END_VAR
+  VAR
+    TRU : BOOL := 1;
+    TP0 : TP;
+    TOF0 : TOF;
+    TP1 : TP;
+    TP2 : TP;
+    _TMP_NOT17_OUT : BOOL;
+    _TMP_AND15_OUT : BOOL;
+    _TMP_AND16_OUT : BOOL;
+    _TMP_NOT22_OUT : BOOL;
+    _TMP_AND26_OUT : BOOL;
+    _TMP_OR27_OUT : BOOL;
+    _TMP_OR20_OUT : BOOL;
+  END_VAR
+
+  TP0(IN := Input1, PT := T#5000ms);
+  _TMP_NOT17_OUT := NOT(TP0.Q);
+  _TMP_AND15_OUT := AND(_TMP_NOT17_OUT, TRU);
+  TP2(IN := TP0.Q, PT := T#3000ms);
+  _TMP_AND16_OUT := AND(TP2.Q, TRU);
+  TOF0(IN := TP1.Q, PT := T#200ms);
+  _TMP_NOT22_OUT := NOT(TOF0.Q);
+  TP1(IN := _TMP_NOT22_OUT, PT := T#200ms);
+  _TMP_AND26_OUT := AND(TP0.Q, TP1.Q);
+  _TMP_OR27_OUT := OR(_TMP_AND16_OUT, _TMP_AND26_OUT);
+  _TMP_OR20_OUT := OR(_TMP_AND15_OUT, _TMP_OR27_OUT);
+  OutB := _TMP_OR20_OUT;
+  OutD := _TMP_OR27_OUT;
+  OutA := _TMP_OR27_OUT;
+  OutE := _TMP_OR27_OUT;
+  OutG := _TMP_OR27_OUT;
+  OutC := _TMP_AND15_OUT;
+END_PROGRAM
+
+
+CONFIGURATION Config0
+
+  RESOURCE Res0 ON PLC
+    TASK task0(INTERVAL := T#20ms,PRIORITY := 0);
+    PROGRAM instance0 WITH task0 : program0;
+  END_RESOURCE
+END_CONFIGURATION
